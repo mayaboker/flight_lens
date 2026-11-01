@@ -27,7 +27,11 @@ changed; old recordings were not modified or assigned guessed filenames.
 Future recordings only; old MCAPs remain Not recorded. File names are provenance, not tunable controller settings. Effective parameters remain authoritative after runtime edits. No commits/pushes requested.
 
 ## Status
-Implemented; verification passed (not committed)
+Implemented; verification passed
 
 ## Implementation commit
-Pending
+`5e51cc00842e616742764aa7a884b18f9d31b9f3`
+
+## Repository snapshot record
+Recorded snapshot: `5e51cc00842e616742764aa7a884b18f9d31b9f3` (flight_lens repository). This is the new local
+baseline containing the current implementation, not a recovered historical commit.

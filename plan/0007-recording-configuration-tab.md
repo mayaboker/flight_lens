@@ -27,7 +27,11 @@ wheel built successfully. Previews: /tmp/flight-lens-recording-app.png and
 Read-only configuration inspection. Existing tab indices retained by appending Recording. No YAML profile-path inference, parameter edits or simulation changes.
 
 ## Status
-Implemented; desktop and focused offscreen verification passed (not committed)
+Implemented; desktop and focused offscreen verification passed
 
 ## Implementation commit
-Pending
+`5e51cc00842e616742764aa7a884b18f9d31b9f3`
+
+## Repository snapshot record
+Recorded snapshot: `5e51cc00842e616742764aa7a884b18f9d31b9f3` (flight_lens repository). This is the new local
+baseline containing the current implementation, not a recovered historical commit.

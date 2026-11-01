@@ -30,7 +30,11 @@ Screenshot: /tmp/flight-lens-simple-issue-desktop.png.
 Read-only retrospective explanation. Use recorded configuration, never today's controller defaults. Keep existing issue detection/navigation and exact frame association.
 
 ## Status
-Implemented; desktop and focused offscreen verification passed (not committed)
+Implemented; desktop and focused offscreen verification passed
 
 ## Implementation commit
-Pending
+`5e51cc00842e616742764aa7a884b18f9d31b9f3`
+
+## Repository snapshot record
+Recorded snapshot: `5e51cc00842e616742764aa7a884b18f9d31b9f3` (flight_lens repository). This is the new local
+baseline containing the current implementation, not a recovered historical commit.
