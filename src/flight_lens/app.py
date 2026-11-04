@@ -19,6 +19,7 @@ from .issue_explanation import explain_issue
 from .recording_view import RecordingTab
 from .model import series
 from .video import export_mp4
+from .desktop import add_launcher_arguments, handle_launcher_arguments, configure_application
 from .assistant import LlamaCppBackend, McapAnalysisTools, McapAssistant
 from .ttc_analysis import (TtcParameters, butterworth_filter, compare_to_hit_time,
                            low_pass_filter, recalculate)
@@ -1945,19 +1946,23 @@ class Overview(QtWidgets.QMainWindow):
             event.accept()
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description='FlightLens · read-only MCAP flight overview')
+    add_launcher_arguments(parser)
     parser.add_argument('recording', nargs='?')
     parser.add_argument('--config', type=Path, default=DEFAULT_CONFIG_PATH,
                         help='YAML settings file')
     parser.add_argument('--assistant-model', help='Path to a local GGUF model for the Assistant tab')
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     try:
+        setup = handle_launcher_arguments(args)
+        if setup is not None:
+            return setup
         config = load_config(args.config)
-    except ValueError as error:
+    except (OSError, ValueError) as error:
         parser.error(str(error))
     application = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-    application.setApplicationName('FlightLens')
+    configure_application(application)
     window = Overview(args.assistant_model or config.get('assistant_model'))
     window.show()
     if args.recording:

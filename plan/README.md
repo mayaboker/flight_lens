@@ -9,3 +9,7 @@
 | [0006 Simple issue explanations](0006-simple-issue-explanations.md) | Explain issue causes using preceding control evidence and recorded limits. | Implemented; desktop and focused offscreen tests passed | `5e51cc00842e616742764aa7a884b18f9d31b9f3` |
 | [0007 Recording configuration](0007-recording-configuration-tab.md) | Inspect recorded application/physics settings and runtime parameter changes. | Implemented; desktop and focused offscreen tests passed | `5e51cc00842e616742764aa7a884b18f9d31b9f3` |
 | [0008 Recorded file origins](0008-recorded-profile-origins.md) | Save source profile/config filenames and show only application parameters in FlightLens. | Implemented; verification passed | `5e51cc00842e616742764aa7a884b18f9d31b9f3` |
+
+- [0009: Linux GUI icons and launchers](0009-linux-gui-icons-launchers.md) — Implemented; 107 tests and installed wheel checks passed; commit Pending.
+
+- [JPEG MCAP recording](../../../plan/0014-jpeg-mcap-recording.md) — Implemented; verification and limitations recorded in the shared plan; implementation commit: Pending.

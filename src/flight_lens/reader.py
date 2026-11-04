@@ -2,6 +2,7 @@
 from collections import defaultdict
 from dataclasses import replace
 import json
+from io import BytesIO
 from math import asin, atan2, isfinite, sqrt
 from pathlib import Path
 from types import MappingProxyType
@@ -9,6 +10,9 @@ from types import MappingProxyType
 import numpy as np
 from bullet_msgs import schema_bytes
 from foxglove_schemas_protobuf.RawImage_pb2 import RawImage
+from foxglove_schemas_protobuf.CompressedImage_pb2 import CompressedImage
+from google.protobuf.message import DecodeError
+from PIL import Image
 from jsonschema import Draft202012Validator, ValidationError
 from mcap.reader import make_reader
 
@@ -452,6 +456,9 @@ def build_episode(key, records, frames, boxes, camera, health, partial, backend=
     integrity = 'Unknown'
     if health:
         integrity = 'Complete (recorder)' if health.get('complete') and not partial else 'Incomplete'
+        dropped = health.get('dropped_images', 0)
+        if dropped:
+            notices.append(f'{dropped:,} images were dropped because the recording queue could not keep up; telemetry was retained.')
         skipped = health.get('skipped_images', 0)
         if skipped:
             notices.append(f'{skipped:,} SHM images were skipped by the recorder.')
@@ -616,11 +623,30 @@ def check_file(data):
         raise ValueError('Recording changed since loading. Reopen the recording.')
 
 
-def decode_frame(channel, message):
+def decode_frame(channel, message, schema=None):
     """Validate and unpack one recorded RGB/BGR image, including row padding."""
     if channel.message_encoding != 'protobuf' or len(message.data) > MAX_IMAGE_BYTES:
         raise ValueError('Unsupported or oversized recorded image.')
-    image = RawImage.FromString(message.data)
+    schema_name = 'foxglove.RawImage' if schema is None else schema.name
+    if schema_name == 'foxglove.CompressedImage':
+        try:
+            image = CompressedImage.FromString(message.data)
+            if image.format != 'jpeg':
+                raise ValueError('Unsupported compressed image format; expected jpeg.')
+            with Image.open(BytesIO(image.data)) as decoded:
+                width, height = decoded.size
+                if decoded.format != 'JPEG' or width <= 0 or height <= 0 or width * height * 3 > MAX_IMAGE_BYTES:
+                    raise ValueError('Unsupported or oversized JPEG image.')
+                with decoded.convert('RGB') as rgb:
+                    return Frame(width, height, rgb.tobytes())
+        except (DecodeError, OSError, Image.DecompressionBombError) as error:
+            raise ValueError(f'Invalid JPEG image: {error}') from error
+    if schema_name != 'foxglove.RawImage':
+        raise ValueError('Unsupported recorded image schema: ' + schema_name)
+    try:
+        image = RawImage.FromString(message.data)
+    except DecodeError as error:
+        raise ValueError('Invalid raw image protobuf') from error
     if (image.width <= 0 or image.height <= 0 or image.step < image.width * 3
             or image.step * image.height > MAX_IMAGE_BYTES or len(image.data) != image.step * image.height
             or image.encoding not in ('rgb8', 'bgr8')):
@@ -637,11 +663,13 @@ def read_frame(data, reference, cancel=lambda: False):
     check_file(data)
     with data.path.open('rb') as file:
         reader = make_reader(file, validate_crcs=True)
-        for _, channel, message in reader.iter_messages(topics=[reference.topic], starting_at=reference.log_time_ns, ending_at=reference.log_time_ns):
+        for schema, channel, message in reader.iter_messages(topics=[reference.topic], starting_at=reference.log_time_ns, ending_at=reference.log_time_ns):
             check_cancel(cancel)
             if message.sequence != reference.record_sequence:
                 continue
-            frame = decode_frame(channel, message)
+            frame = decode_frame(channel, message, schema)
+            if (reference.width > 0 and frame.width != reference.width) or (reference.height > 0 and frame.height != reference.height):
+                raise ValueError('Decoded image dimensions differ from recorded metadata.')
             check_cancel(cancel)
             return frame
     raise ValueError('Exact image record is missing from this recording.')
