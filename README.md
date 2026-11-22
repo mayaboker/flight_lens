@@ -74,7 +74,8 @@ Drag the white cursor in either time plot; both plots share time and horizontal
 zoom. The position circle follows that simulation time on the trajectory, and
 the footer shows nearby recorded data ages/limits. Clicking an event selects its
 time, details and camera frame. The camera preview stays tied to the **selected
-event**, even when the time cursor subsequently moves. There is no in-app video playback.
+event**, even when the time cursor subsequently moves. The Tracking tab provides
+image playback when recorded frames are available.
 Y displacement is reported separately because the X–Z view hides lateral motion.
 
 Repeated status packets become intervals rather than hundreds of event rows.
@@ -172,16 +173,16 @@ detector boxes are drawn; missing detections remain unannotated. No text or flig
 telemetry is added. The default filename is `<recording>-episode-<number>.mp4`.
 
 The selected episode's front-camera images are encoded as H.264, `yuv420p`, at
-30 FPS with fast-start enabled. Playback follows recorded **simulation time**,
-starting at the first image: recording-time pauses do not extend the movie. Each
-video tick uses the latest available exposure, repeating or dropping frames as
-necessary. The movie ends at the last simulation-time tick covered by the images,
+30 FPS with fast-start enabled. Older flight recordings follow **simulation time**;
+schema-free MCAP Bagger recordings follow MCAP receive time. Both start at their
+first image. Each video tick uses the latest available exposure, repeating or dropping frames as
+necessary. The movie ends at the last timeline tick covered by the images,
 with one frame of display duration. Odd image dimensions are padded with black
 along the bottom/right edges, without scaling or changing image proportions.
 
 FFmpeg with the `libx264` encoder must be installed on PATH. The app checks it
 before conversion and reports missing support; it does not install system tools.
-Missing/decreasing simulation timestamps, missing image records, invalid layouts,
+Missing/decreasing playback timestamps, missing image records, invalid layouts,
 changing image resolution and changed input files cause an explicit error.
 
 Export runs in the background with progress and **Cancel export**. Opening another
@@ -287,11 +288,25 @@ associations are not included.
 
 ## JPEG camera recordings
 
-Flight Lens opens both existing `foxglove.RawImage` records and JPEG
-`foxglove.CompressedImage` records from mcap_bagger. Preview/export decodes one
-indexed frame at a time, validates dimensions before loading pixels, and preserves
-image timestamps and exact metadata matching. Unsupported compressed formats are
-rejected. Recorder queue losses appear as an explicit notice; a finalized file
-may still contain dropped images. JPEG decoding uses Pillow, included in the wheel
-dependencies. Reinstall the updated Flight Lens and bullet_msgs wheels alongside
-the updated recorder/logger when deploying this feature.
+Flight Lens opens older `foxglove.RawImage` and `foxglove.CompressedImage` records,
+and the current MCAP Bagger's schema-free JPEG image channel. Preview/export
+decodes one indexed frame at a time and validates dimensions before loading
+pixels. Bagger raw-image records without dimensions are rejected. JPEG decoding
+uses Pillow, included in the wheel dependencies.
+
+## MCAP Bagger playback
+
+Open a finalized MCAP Bagger file with `camera/front/image`,
+`telemetry/vfr_hud`, or `telemetry/attitude` channels. Flight Lens decodes the
+App's version-1 MsgPack envelopes to plot VFR_HUD altitude in metres and MAVLink
+roll, pitch and yaw in degrees. The Tracking tab plays recorded JPEG frames with
+the most recent preceding altitude and attitude sample when it is at most 0.5 s
+old. Images remain on disk until selected, and MP4 export uses the same frame
+timeline.
+
+All three streams use MCAP `log_time`, shown as seconds since the first relevant
+message. Source `publish_time` is retained in the recording but does not align
+the playback. Bagger files have no physics trajectory, mission events, or TTC
+analysis; those views stay unavailable. Invalid telemetry is skipped with a
+notice. Finalize the recording before opening it; a `.mcap.partial` file is not
+a playable recording.

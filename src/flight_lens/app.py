@@ -274,10 +274,12 @@ class TrackingReplay(QtWidgets.QWidget):
     SPEEDS = (0.1, 0.25, 0.5, 1.0, 2.0, 4.0)
     issue_selected = QtCore.Signal(object)
     frame_requested = QtCore.Signal(object, object)
+    time_changed = QtCore.Signal(float)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.samples = ()
+        self.is_bagger = False
         self.issue_events = ()
         self.issue_times = ()
         self.issue_index = -1
@@ -323,7 +325,8 @@ class TrackingReplay(QtWidgets.QWidget):
         controls.addWidget(self.export_button)
         controls.addWidget(self.export_status)
         controls.addWidget(self.show_camera_frame)
-        controls.addWidget(QtWidgets.QLabel('Simulation rate'))
+        self.rate_label = QtWidgets.QLabel('Simulation rate')
+        controls.addWidget(self.rate_label)
         controls.addWidget(self.speed)
         controls.addStretch(1)
         root.addLayout(controls)
@@ -333,6 +336,7 @@ class TrackingReplay(QtWidgets.QWidget):
         camera_layout.setContentsMargins(0, 0, 0, 0)
         camera_layout.setSpacing(8)
         timeline_group = QtWidgets.QGroupBox('Replay timeline')
+        self.timeline_group = timeline_group
         timeline_group.setStyleSheet(
             'QGroupBox { border:1px solid #426983; border-radius:5px; margin-top:8px; padding:8px; }'
             'QGroupBox::title { subcontrol-origin: margin; left:10px; padding:0 4px; color:#70d6ad; }'
@@ -384,7 +388,7 @@ class TrackingReplay(QtWidgets.QWidget):
             ('Tracking', ('phase', 'reason', 'navigator')),
             ('Camera / target', ('dx', 'dy', 'bbox age')),
             ('Time to contact', ('ttc raw', 'ttc filtered', 'ttc valid')),
-            ('Attitude', ('attitude age', 'measured R/P/Y')),
+            ('Flight telemetry', ('altitude', 'attitude age', 'measured R/P/Y')),
             ('Command', ('roll', 'pitch', 'yaw rate', 'thrust')),
         ):
             group = QtWidgets.QGroupBox(title)
@@ -429,7 +433,12 @@ class TrackingReplay(QtWidgets.QWidget):
         self._render()
 
     def set_episode(self, episode):
+        self.is_bagger = episode.time_basis == 'recording'
         self.samples = tuple(episode.tracking_samples)
+        self.rate_label.setText('Recording rate' if self.is_bagger else 'Simulation rate')
+        self.timeline_group.setTitle('Camera playback' if self.is_bagger else 'Replay timeline')
+        self.export_button.setEnabled(not self.is_bagger)
+        self.camera_timeline.setToolTip('Scrub through recorded images' if self.is_bagger else 'Scrub through tracking samples')
         self.issue_events = tuple(sorted(
             (event for event in episode.events if event.severity in ('warning', 'error') and event.time_s is not None),
             key=lambda event: (event.time_s, event.arrival_ns),
@@ -557,6 +566,8 @@ class TrackingReplay(QtWidgets.QWidget):
                 value.setStyleSheet('font:11px monospace; color:#d9e6f4')
             return
         sample = self.samples[self.index]
+        if self.is_bagger:
+            self.time_changed.emit(sample.time_s)
         if sample.frame is not None:
             self.frame_requested.emit(sample.frame, sample.bbox)
         else:
@@ -586,6 +597,7 @@ class TrackingReplay(QtWidgets.QWidget):
             'ttc raw': fmt(sample.ttc_raw_s, ' s'),
             'ttc filtered': fmt(sample.ttc_filtered_s, ' s'),
             'ttc valid': str(sample.ttc_valid) if sample.ttc_valid is not None else '—',
+            'altitude': fmt(sample.altitude_m, ' m'),
             'attitude age': fmt(sample.measured_attitude_age_s, ' s'),
             'measured R/P/Y': attitude,
             'roll': fmt(sample.requested_roll_deg, '°'),
@@ -1099,6 +1111,7 @@ class Overview(QtWidgets.QMainWindow):
         self.tracking_tab = TrackingReplay()
         self.tracking_tab.issue_selected.connect(self._select_tracking_issue)
         self.tracking_tab.frame_requested.connect(self._request_tracking_frame)
+        self.tracking_tab.time_changed.connect(self.set_cursor)
         self.tabs.addTab(self.tracking_tab, 'Tracking')
         self.assistant_tab = QtWidgets.QWidget()
         self.tabs.addTab(self.assistant_tab, 'Assistant')
@@ -1681,11 +1694,13 @@ class Overview(QtWidgets.QMainWindow):
 
     def apply_data(self, data):
         self.data = data
+        bagger = data.recording_format == 'bagger'
         self.frame_cache.clear()
         self.cancel_button.hide()
         self.content.setEnabled(True)
         self.episodes.setEnabled(True)
-        self.export_button.setEnabled(not any(job.kind == 'export' for job in self.jobs))
+        self.export_button.setEnabled(bool(data.episodes[data.default_episode].frames)
+                                      and not any(job.kind == 'export' for job in self.jobs))
         self.file_label.setText(data.path.name + f'  ·  {data.size / 1024**2:.1f} MiB')
         self.file_label.setToolTip(str(data.path))
         self.setWindowTitle('FlightLens · ' + data.path.name)
@@ -1696,9 +1711,16 @@ class Overview(QtWidgets.QMainWindow):
                 self.episodes.setItemData(self.episodes.count()-1, f"Physics {episode.key[0]}\nEpisode {episode.key[1]}", QtCore.Qt.ItemDataRole.ToolTipRole)
             self.episodes.setCurrentIndex(data.default_episode)
         self.select_episode(data.default_episode)
-        self.status.setText(f'Loaded {len(data.episodes)} episode(s) · Read-only · Timeline images load on demand')
-        self.assistant_submit.setEnabled(self.assistant is not None and self.episode is not None)
-        self.assistant_generate_sql.setEnabled(self.assistant is not None and self.episode is not None)
+        for tab in (self.msp_tab, self.visual_tab, self.ttc_tab, self.velocity_tab,
+                    self.assistant_tab, self.recording_tab):
+            self.tabs.setTabEnabled(self.tabs.indexOf(tab), not bagger)
+        if bagger:
+            self.tabs.setCurrentWidget(self.tracking_tab)
+        self.status.setText((f'Loaded {len(self.episode.frames):,} bagger images · Recording-time playback'
+                             if bagger else f'Loaded {len(data.episodes)} episode(s) · Read-only · Timeline images load on demand'))
+        assistant_enabled = self.assistant is not None and self.episode is not None and data.index_path is not None
+        self.assistant_submit.setEnabled(assistant_enabled)
+        self.assistant_generate_sql.setEnabled(assistant_enabled)
         self.assistant_generated_sql = None
         self.assistant_sql_episode_key = None
         self.assistant_run_sql.setEnabled(False)
@@ -1722,6 +1744,15 @@ class Overview(QtWidgets.QMainWindow):
                 job.cancelled.set()
         self.preview_token = -1
         self.episode = episode = self.data.episodes[index]
+        bagger = episode.time_basis == 'recording'
+        time_axis = 'Recording time' if bagger else 'Simulation time'
+        for plot in (self.altitude, self.margins, *self.attitude_plots, self.thrust_plot,
+                     *self.msp_plots, *self.visual_plots, *self.velocity_plots):
+            plot.setLabel('bottom', time_axis, units='s')
+        self.altitude.setTitle('MAVLink VFR_HUD altitude' if bagger
+                               else 'Altitude · actual, barometer, recorded takeoff goal')
+        for plot, axis in zip(self.attitude_plots, ('Roll', 'Pitch', 'Yaw')):
+            plot.setTitle(f'MAVLink {axis} attitude' if bagger else f'{axis} attitude · measured and estimated')
         self.recording_tab.set_episode(episode, self.data.path)
         self.tracking_tab.set_episode(episode)
         self.ttc_tab.set_episode(episode)
@@ -1755,14 +1786,17 @@ class Overview(QtWidgets.QMainWindow):
             self.trajectory.plot([points[-1, 0]], [points[-1, 2]], pen=None, symbol='s', symbolBrush=COLORS[1], symbolSize=10)
         self.selected_position = self.trajectory.plot([], [], pen=None, symbol='o', symbolBrush='#ffffff', symbolPen=COLORS[0], symbolSize=11)
         self._curve(self.altitude, episode.trajectory, 2, episode.trajectory_origin, COLORS[0])
-        self._curve(self.altitude, episode.barometer, 0, 'Barometer altitude', COLORS[1])
+        self._curve(self.altitude, episode.barometer, 0,
+                    'MAVLink VFR_HUD altitude' if bagger else 'Barometer altitude', COLORS[1])
         self._curve(self.altitude, episode.goal, 0, 'Takeoff goal · barometer datum', COLORS[2], True)
         for column, name in enumerate(('Left', 'Top', 'Right', 'Bottom')):
             self._curve(self.margins, episode.margins, column, name, COLORS[column])
         self.margins.addItem(pg.InfiniteLine(0, angle=0, pen=pg.mkPen('#ff8282', style=QtCore.Qt.PenStyle.DashLine)))
-        self.margins.setTitle(episode.margins_origin + ' edge clearance · zero is boundary contact')
+        self.margins.setTitle('BBox unavailable in this recording' if bagger
+                              else episode.margins_origin + ' edge clearance · zero is boundary contact')
         for column, (plot, name) in enumerate(zip(self.attitude_plots, ('Roll', 'Pitch', 'Yaw'))):
-            self._curve(plot, episode.attitude, column, 'Measured ' + name, ATTITUDE_MEASURED_COLOR)
+            self._curve(plot, episode.attitude, column,
+                        ('MAVLink ' if bagger else 'Measured ') + name, ATTITUDE_MEASURED_COLOR)
             self._curve(plot, episode.feedback_attitude, column, 'Estimated ' + name, ATTITUDE_ESTIMATED_COLOR, dashed=True)
         has_msp = bool(len(episode.msp_attitude.times))
         self.msp_status.setText('Betaflight MSP attitude · measured at the firmware response timestamps'
@@ -1850,7 +1884,9 @@ class Overview(QtWidgets.QMainWindow):
         self.canvas.clear_frame('Select an event to inspect its exact camera frame.')
         self.details.clear()
         self.preview_caption.setText('EVENT CAMERA FRAME · No video playback')
-        self.set_cursor(float(episode.trajectory.times[0]) if len(episode.trajectory.times) else 0.)
+        initial_time = (episode.frames[0].recording_time_s if bagger and episode.frames else
+                        float(episode.trajectory.times[0]) if len(episode.trajectory.times) else 0.)
+        self.set_cursor(initial_time)
         if episode.events:
             preferred = next((i for i, e in enumerate(episode.events) if e.severity == 'error'),
                              next((i for i, e in enumerate(episode.events) if e.severity == 'warning'), 0))
@@ -1865,6 +1901,18 @@ class Overview(QtWidgets.QMainWindow):
         for line in self.cursors:
             with QtCore.QSignalBlocker(line):
                 line.setValue(time_s)
+        if self.episode.time_basis == 'recording':
+            def recent(values):
+                index = int(np.searchsorted(values.times, time_s, side='right')) - 1
+                return (values.values[index] if index >= 0 and time_s - values.times[index] <= .5
+                        else None)
+            altitude = recent(self.episode.barometer)
+            attitude = recent(self.episode.attitude)
+            altitude_text = 'unavailable' if altitude is None else f'{altitude[0]:+.2f} m'
+            attitude_text = ('unavailable' if attitude is None
+                             else '/'.join(f'{value:+.1f}°' for value in attitude))
+            self.readout.setText(f'Cursor {time_s:.3f} s · VFR_HUD altitude {altitude_text} · MAVLink R/P/Y {attitude_text}')
+            return
         samples = self.episode.trajectory
         index = samples.nearest(time_s)
         if index is None:

@@ -58,6 +58,11 @@ class FrameRef:
     width: int
     height: int
     simulation_time_s: float | None = None
+    recording_time_s: float | None = None
+
+    @property
+    def playback_time_s(self):
+        return self.recording_time_s if self.recording_time_s is not None else self.simulation_time_s
 
 
 @dataclass(frozen=True)
@@ -114,6 +119,7 @@ class TrackingSample:
     requested_yaw_rate_deg_s: float | None
     requested_thrust_n: float | None
     frame: FrameRef | None = None
+    altitude_m: float | None = None
 
 
 @dataclass(frozen=True)
@@ -167,6 +173,7 @@ class Episode:
     boxes: Mapping
     configurations: tuple[ConfigurationSnapshot, ...] = ()
     parameter_changes: tuple[ParameterChange, ...] = ()
+    time_basis: str = 'simulation'
 
     def context_at(self, time_s):
         index = bisect_left(self.context_times, time_s)
@@ -187,3 +194,4 @@ class FlightData:
     notices: tuple[str, ...]
     camera_image_count: int | None = None
     index_path: Path | None = None
+    recording_format: str = 'legacy'

@@ -21,6 +21,7 @@ from .model import (Episode, Event, FlightData, Frame, FrameRef, Summary, Tracki
 from .estimator import estimate_attitude
 from .sqlite_index import build_index, read_derived, validate_index
 from .issue_explanation import IssueEvidence
+from .bagger_reader import is_bagger_summary, load_bagger_flight
 
 TRUTH = 'analysis/physics/ground_truth'
 SENSORS = 'analysis/physics/sensors'
@@ -490,6 +491,9 @@ def load_flight(path, progress=lambda message: None, cancel=lambda: False):
     path = Path(path).resolve()
     stat = path.stat()
     existing_index = validate_index(path)
+    with path.open('rb') as stream:
+        if is_bagger_summary(make_reader(stream).get_summary()):
+            return load_bagger_flight(path, progress, cancel)
     validators = {topic: Draft202012Validator(json.loads(schema_bytes(name))) for topic, name in SCHEMAS.items()}
     records, frames, boxes, cameras, stream_physics, backends = [], {}, {}, {}, {}, {}
     health, warnings = None, defaultdict(int)
@@ -623,8 +627,27 @@ def check_file(data):
         raise ValueError('Recording changed since loading. Reopen the recording.')
 
 
+def _decode_jpeg(payload):
+    if len(payload) > MAX_IMAGE_BYTES:
+        raise ValueError('Unsupported or oversized JPEG image.')
+    try:
+        with Image.open(BytesIO(payload)) as decoded:
+            width, height = decoded.size
+            if decoded.format != 'JPEG' or width <= 0 or height <= 0 or width * height * 3 > MAX_IMAGE_BYTES:
+                raise ValueError('Unsupported or oversized JPEG image.')
+            with decoded.convert('RGB') as rgb:
+                return Frame(width, height, rgb.tobytes())
+    except (OSError, Image.DecompressionBombError) as error:
+        raise ValueError(f'Invalid JPEG image: {error}') from error
+
+
 def decode_frame(channel, message, schema=None):
-    """Validate and unpack one recorded RGB/BGR image, including row padding."""
+    """Validate and unpack one recorded image; bagger JPEGs have no MCAP schema."""
+    metadata = getattr(channel, 'metadata', {})
+    if metadata.get('shm') == 'true' and channel.message_encoding == '':
+        if metadata.get('compress') != 'jpeg':
+            raise ValueError('Bagger raw images need recorded dimensions; this playback supports JPEG images.')
+        return _decode_jpeg(message.data)
     if channel.message_encoding != 'protobuf' or len(message.data) > MAX_IMAGE_BYTES:
         raise ValueError('Unsupported or oversized recorded image.')
     schema_name = 'foxglove.RawImage' if schema is None else schema.name
@@ -633,13 +656,8 @@ def decode_frame(channel, message, schema=None):
             image = CompressedImage.FromString(message.data)
             if image.format != 'jpeg':
                 raise ValueError('Unsupported compressed image format; expected jpeg.')
-            with Image.open(BytesIO(image.data)) as decoded:
-                width, height = decoded.size
-                if decoded.format != 'JPEG' or width <= 0 or height <= 0 or width * height * 3 > MAX_IMAGE_BYTES:
-                    raise ValueError('Unsupported or oversized JPEG image.')
-                with decoded.convert('RGB') as rgb:
-                    return Frame(width, height, rgb.tobytes())
-        except (DecodeError, OSError, Image.DecompressionBombError) as error:
+            return _decode_jpeg(image.data)
+        except DecodeError as error:
             raise ValueError(f'Invalid JPEG image: {error}') from error
     if schema_name != 'foxglove.RawImage':
         raise ValueError('Unsupported recorded image schema: ' + schema_name)

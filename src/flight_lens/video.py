@@ -1,4 +1,4 @@
-"""Bounded, cancellable simulation-time MP4 export through installed FFmpeg."""
+"""Bounded, cancellable MCAP timeline MP4 export through installed FFmpeg."""
 from math import ceil, floor, isfinite
 import os
 from pathlib import Path
@@ -40,12 +40,12 @@ def check_encoder():
 def frame_schedule(references):
     """At each 30 Hz tick use the latest exposure, never a future exposure."""
     if not references:
-        raise ValueError('No front-camera images with episode metadata. Reopen a recording with image metadata.')
-    times = [ref.simulation_time_s for ref in references]
+        raise ValueError('No front-camera images with playback metadata available for MP4 export.')
+    times = [ref.playback_time_s for ref in references]
     if any(type(t) not in (float, int) or not isfinite(t) or t < 0 for t in times):
-        raise ValueError('Image simulation timestamps are missing or invalid. No other clock is substituted.')
+        raise ValueError('Image playback timestamps are missing or invalid.')
     if any(b < a for a, b in zip(times, times[1:])):
-        raise ValueError('Image simulation timestamps decrease within this episode.')
+        raise ValueError('Image playback timestamps decrease within this episode.')
     ticks = [(t - times[0]) * FPS for t in times]
     boundaries = [ceil(t - TICK_EPSILON) for t in ticks]
     total = floor(ticks[-1] + TICK_EPSILON) + 1
@@ -102,7 +102,7 @@ def export_mp4(data, episode, destination, *, include_boxes=False, overwrite=Fal
     known = {(ref.log_time_ns, ref.record_sequence) for item in data.episodes
              for ref in item.frames if ref.topic == CAMERA_TOPIC}
     if data.camera_image_count is not None and len(known) != data.camera_image_count:
-        raise ValueError('Some camera images lack unique episode/timing metadata. Reopen a fully stamped recording.')
+        raise ValueError('Some camera images lack unique timing metadata. Reopen a complete recording.')
     executable = check_encoder()
     expected = {(ref.log_time_ns, ref.record_sequence): (ref, count) for ref, count in zip(references, counts)}
     if len(expected) != len(references):
