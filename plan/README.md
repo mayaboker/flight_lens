@@ -12,6 +12,6 @@
 
 - [0009: Linux GUI icons and launchers](0009-linux-gui-icons-launchers.md) — Implemented; 107 tests and installed wheel checks passed; commit Pending.
 
-- [0010: MCAP Bagger recording playback](0010-bagger-recording-playback.md) — Implemented; 118 tests and wheel build passed; commit Pending.
+- [0010: MCAP Bagger recording playback](0010-bagger-recording-playback.md) — Implemented; 118 tests and wheel build passed; implementation commit `9828ad1`.
 
 - [JPEG MCAP recording](../../../plan/0014-jpeg-mcap-recording.md) — Implemented; verification and limitations recorded in the shared plan; implementation commit: Pending.

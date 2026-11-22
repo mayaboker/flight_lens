@@ -22,4 +22,4 @@ Synthetic MCAP fixtures cover parsing, missing or malformed telemetry, JPEG deco
 
 ## Status
 
-Implemented. Implementation commit: Pending (no commit requested).
+Implemented. Implementation commit: `9828ad1`.
