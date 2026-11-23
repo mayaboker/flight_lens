@@ -305,7 +305,13 @@ velocity plots in metres and metres per second; the Velocity tab is available
 when those samples exist. The Visual tab decodes `visual/bbox` to plot camera-center
 error and image-edge margins. Qualified `features/navigation_result` estimates
 populate the recorded optical TTC curve. The TTC tab can also recalculate TTC
-from the recorded bbox sequence using its session-only controls. The Tracking tab
+from the recorded bbox sequence using its session-only controls. When
+`simulation/target_contact` first records `true`, Flight Lens marks contact with
+a red vertical line on time plots and stops plotting telemetry after that time.
+The first `features/navigation_result` marks the recorded start of LOS with an
+orange vertical line on the time plots and an entry in the event list. For a
+recording that begins during LOS, this marks the first recorded navigator result.
+Contact also supplies the TTC hit-time oracle. The Tracking tab
 plays recorded JPEG frames with
 the most recent preceding altitude and attitude sample when it is at most 0.5 s
 old. Images remain on disk until selected, and MP4 export uses the same frame
@@ -314,7 +320,8 @@ timeline.
 These streams use MCAP `log_time`, shown as seconds since the first relevant
 message. Source `publish_time` is retained in the recording but does not align
 the playback. The MSP tab stays unavailable because the sample Bagger recording
-does not include MSP diagnostics. The TTC hit-time oracle and mission events are
-unavailable without their source records. Invalid telemetry is skipped with a
+does not include MSP diagnostics. The TTC hit-time oracle is unavailable without
+a recorded contact event; other mission events are unavailable without their
+source records. Invalid telemetry is skipped with a
 notice. Finalize the recording before opening it; a `.mcap.partial` file is not
 a playable recording.

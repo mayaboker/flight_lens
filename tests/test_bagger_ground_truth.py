@@ -46,6 +46,9 @@ def test_visual_bbox_and_navigation_ttc_feed_bagger_plots(tmp_path):
         box = {'schema_version': 3, 'sequence': 0, 'width': 640, 'height': 480,
                'bbox': {'x': 320, 'y': 240, 'width': 20, 'height': 10}}
         writer.add_message(visual, base, envelope(box), base)
+        writer.add_message(navigation, base + 10_000_000, envelope({
+            'diagnostics': {'optical_ttc_s': None, 'ttc_reason': 'insufficient_history'}}),
+            base + 10_000_000)
         writer.add_message(image, base + 50_000_000, b'jpeg', base + 50_000_000, 0)
         writer.add_message(navigation, base + 70_000_000, envelope({
             'diagnostics': {'optical_ttc_s': 2.5, 'ttc_reason': 'qualified'}}), base + 70_000_000)
@@ -59,6 +62,40 @@ def test_visual_bbox_and_navigation_ttc_feed_bagger_plots(tmp_path):
     assert episode.camera_error_y.values[:, 0].tolist() == [5.]
     assert episode.margins.values.tolist() == [[320., 240., 300., 230.]]
     assert episode.ttc_filtered.values[:, 0].tolist() == [2.5]
+    assert episode.tracking_time_s == .01
+    assert [(event.reason, event.time_s) for event in episode.events] == [('los_start', .01)]
     assert [sample.bbox for sample in episode.ttc_samples] == [(320., 240., 20., 10.), None]
     assert episode.tracking_samples[0].bbox == (320., 240., 20., 10.)
     assert episode.tracking_samples[1].bbox is None
+
+
+def test_first_contact_marks_hit_and_ends_plotted_samples(tmp_path):
+    path = tmp_path / 'contact.mcap'
+    base = 1_700_000_000_000_000_000
+    with path.open('wb') as stream:
+        writer = Writer(stream, compression=CompressionType.NONE)
+        writer.start()
+        contact = writer.register_channel('simulation/target_contact', '', 0, {'shm': 'false'})
+        altitude = writer.register_channel('telemetry/vfr_hud', '', 0, {'shm': 'false'})
+        truth = writer.register_channel('analysis/physics/ground_truth', '', 0, {'shm': 'false'})
+
+        def envelope(value):
+            return msgpack.packb({'schema_version': 1, 'value': value}, use_bin_type=True)
+
+        for index in range(4):
+            stamp = base + index * 100_000_000
+            writer.add_message(altitude, stamp, envelope({'alt': index}), stamp)
+            record = dict(schema_version=1, drone_id='drone_1', episode_id='episode',
+                          step_index=index, simulation_time_s=index / 10,
+                          position_m=[index, 0, index], linear_velocity_m_s=[index, 0, 0])
+            writer.add_message(truth, stamp, json.dumps(record).encode(), stamp)
+            writer.add_message(contact, stamp, envelope(index >= 2), stamp)
+        writer.finish()
+
+    episode = load_bagger_flight(path, lambda _: None, lambda: False).episodes[0]
+    assert len(episode.events) == 1
+    assert episode.events[0].reason == 'target_hit'
+    assert episode.events[0].time_s == .2
+    assert episode.trajectory.times.tolist() == [0., .1, .2]
+    assert episode.velocity.times.tolist() == [0., .1, .2]
+    assert episode.barometer.times.tolist() == [0., .1, .2]

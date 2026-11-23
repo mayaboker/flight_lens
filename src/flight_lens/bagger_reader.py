@@ -7,7 +7,7 @@ from pathlib import Path
 import msgpack
 from mcap.reader import make_reader
 
-from .model import Episode, FlightData, FrameRef, Summary, TrackingSample, series
+from .model import Episode, Event, FlightData, FrameRef, Summary, TrackingSample, series
 
 IMAGE = 'camera/front/image'
 ALTITUDE = 'telemetry/vfr_hud'
@@ -15,7 +15,8 @@ ATTITUDE = 'telemetry/attitude'
 GROUND_TRUTH = 'analysis/physics/ground_truth'
 BBOX = 'visual/bbox'
 NAVIGATION_RESULT = 'features/navigation_result'
-TOPICS = (IMAGE, ALTITUDE, ATTITUDE, GROUND_TRUTH, BBOX, NAVIGATION_RESULT)
+CONTACT = 'simulation/target_contact'
+TOPICS = (IMAGE, ALTITUDE, ATTITUDE, GROUND_TRUTH, BBOX, NAVIGATION_RESULT, CONTACT)
 MAX_ENVELOPE_BYTES = 1024 * 1024
 MAX_SAMPLE_AGE_S = .5
 
@@ -25,13 +26,13 @@ def is_bagger_summary(summary):
     if summary is None:
         return False
     return any(channel.topic == IMAGE and channel.metadata.get('shm') == 'true'
-               or channel.topic in (ALTITUDE, ATTITUDE, GROUND_TRUTH, BBOX, NAVIGATION_RESULT)
+               or channel.topic in (ALTITUDE, ATTITUDE, GROUND_TRUTH, BBOX, NAVIGATION_RESULT, CONTACT)
                and channel.schema_id == 0
                and channel.message_encoding == ''
                for channel in summary.channels.values())
 
 
-def _envelope(payload):
+def _envelope(payload, value_type=dict):
     if len(payload) > MAX_ENVELOPE_BYTES:
         raise ValueError('MsgPack telemetry exceeds 1 MiB')
     try:
@@ -40,7 +41,7 @@ def _envelope(payload):
             msgpack.StackError) as error:
         raise ValueError('Invalid MsgPack telemetry') from error
     if (not isinstance(packet, dict) or type(packet.get('schema_version')) is not int
-            or packet['schema_version'] != 1 or not isinstance(packet.get('value'), dict)):
+            or packet['schema_version'] != 1 or type(packet.get('value')) is not value_type):
         raise ValueError('Unsupported blackboard telemetry envelope')
     return packet['value']
 
@@ -153,8 +154,8 @@ def load_bagger_flight(path, progress, cancel):
         raise ValueError('Finish the MCAP Bagger recording before opening it.')
     stat = path.stat()
     images, altitude_rows, attitude_rows, truth_rows = [], [], [], []
-    bbox_rows, bbox_by_sequence, ttc_rows = [], {}, []
-    invalid = {ALTITUDE: 0, ATTITUDE: 0, GROUND_TRUTH: 0, BBOX: 0, NAVIGATION_RESULT: 0}
+    bbox_rows, bbox_by_sequence, ttc_rows, navigation_stamps, contact_stamps = [], {}, [], [], []
+    invalid = {ALTITUDE: 0, ATTITUDE: 0, GROUND_TRUTH: 0, BBOX: 0, NAVIGATION_RESULT: 0, CONTACT: 0}
     with path.open('rb') as stream:
         reader = make_reader(stream, validate_crcs=True)
         summary = reader.get_summary()
@@ -173,6 +174,10 @@ def load_bagger_flight(path, progress, cancel):
                 images.append((message.log_time, message.sequence))
                 continue
             try:
+                if channel.topic == CONTACT:
+                    if _envelope(message.data, bool):
+                        contact_stamps.append(message.log_time)
+                    continue
                 if channel.topic == GROUND_TRUTH:
                     truth_rows.append((message.log_time, _ground_truth(message.data)))
                     continue
@@ -188,6 +193,7 @@ def load_bagger_flight(path, progress, cancel):
                     bbox_by_sequence.setdefault(value['sequence'], []).append((message.log_time, box))
                 elif channel.topic == NAVIGATION_RESULT:
                     estimate = _optical_ttc(value)
+                    navigation_stamps.append(message.log_time)
                     if estimate is not None:
                         ttc_rows.append((message.log_time, (estimate,)))
             except (KeyError, ValueError, OverflowError):
@@ -198,10 +204,21 @@ def load_bagger_flight(path, progress, cancel):
     stamps.extend(stamp for stamp, _ in truth_rows)
     stamps.extend(stamp for stamp, _ in bbox_rows)
     stamps.extend(stamp for stamp, _ in ttc_rows)
+    stamps.extend(navigation_stamps)
+    stamps.extend(contact_stamps)
     if not stamps:
         raise ValueError('No recorded images, telemetry, physics truth, visual boxes, or optical TTC samples found.')
     origin = min(stamps)
     elapsed = lambda stamp: (stamp - origin) / 1e9
+    contact_stamp = min(contact_stamps) if contact_stamps else None
+    los_stamp = min(navigation_stamps) if navigation_stamps else None
+    # Keep the original MCAP and image timeline; stop only plotted samples at contact.
+    through_contact = lambda rows: (row for row in rows if contact_stamp is None or row[0] <= contact_stamp)
+    altitude_rows = list(through_contact(altitude_rows))
+    attitude_rows = list(through_contact(attitude_rows))
+    truth_rows = list(through_contact(truth_rows))
+    bbox_rows = list(through_contact(bbox_rows))
+    ttc_rows = list(through_contact(ttc_rows))
     altitude = series((elapsed(stamp), value) for stamp, value in altitude_rows)
     attitude = series(((elapsed(stamp), value) for stamp, value in attitude_rows), 3)
     trajectory = series(((elapsed(stamp), vectors[0]) for stamp, vectors in truth_rows), 3)
@@ -254,6 +271,16 @@ def load_bagger_flight(path, progress, cancel):
         notices.append('Visual bounding boxes were not recorded.')
     if not ttc_filtered.times.size:
         notices.append('Qualified optical TTC was not recorded.')
+    events = []
+    if los_stamp is not None:
+        events.append(Event(elapsed(los_stamp), elapsed(los_stamp), los_stamp,
+                            'info', 'navigation', 'los_start', 'LOS',
+                            {'source': NAVIGATION_RESULT}))
+    if contact_stamp is not None:
+        events.append(Event(elapsed(contact_stamp), elapsed(contact_stamp), contact_stamp,
+                            'info', 'simulation', 'target_hit', 'CONTACT',
+                            {'source': CONTACT}))
+    events.sort(key=lambda event: event.arrival_ns)
     empty = series([])
     episode = Episode(
         key=('mcap_bagger', path.stem), trajectory=trajectory,
@@ -262,9 +289,11 @@ def load_bagger_flight(path, progress, cancel):
         msp_attitude=series([], 3), msp_attitude_estimate=series([], 3),
         ttc_raw=empty, ttc_filtered=ttc_filtered, camera_error_x=camera_error_x,
         camera_error_y=camera_error_y,
-        thrust=empty, tracking_time_s=None, tracking_samples=tuple(samples),
+        thrust=empty, tracking_time_s=elapsed(los_stamp) if los_stamp is not None else None,
+        tracking_samples=tuple(samples),
         barometer=altitude, goal=empty, margins=margins,
-        margins_origin='Recorded bbox', events=(),
+        margins_origin='Recorded bbox',
+        events=tuple(events),
         summary=Summary('Not recorded', elapsed(max(stamps)),
                         float(max(trajectory.values[:, 2])) if trajectory.times.size else
                         float(max(altitude.values[:, 0])) if altitude.times.size else None,

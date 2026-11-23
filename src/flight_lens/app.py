@@ -876,6 +876,11 @@ class TtcInvestigation(QtWidgets.QWidget):
                     and event.phase in ('LOS_COMMIT', 'FAULT')]
         if terminal:
             end = min(end, min(terminal))
+        contact = [event.time_s for event in self.episode.events
+                   if event.time_s is not None and event.time_s >= start
+                   and event.reason == 'target_hit']
+        if contact:
+            end = min(end, min(contact)) if terminal else min(contact)
         return float(start), max(float(start), float(end))
 
     def _apply_view(self):
@@ -1018,6 +1023,11 @@ class TtcInvestigation(QtWidgets.QWidget):
             plot.addItem(line)
             line.sigPositionChanged.connect(lambda line=line: self.cursor_changed.emit(line.value()))
             self._cursor_lines.append(line)
+        if comparison.hit_time_s is not None and tracking_start <= comparison.hit_time_s <= tracking_end:
+            for plot in (self.raw_plot, self.estimate_plot):
+                plot.addItem(pg.InfiniteLine(comparison.hit_time_s, angle=90,
+                                             pen=pg.mkPen('#ff6565', width=2), label='Contact',
+                                             labelOpts={'color': '#ff6565', 'position': .9}))
         oracle_max = max(y_max, self._oracle_max_ttc)
         self.error_plot.setLimits(xMin=0., xMax=oracle_max, yMin=0., yMax=y_max)
         self.error_plot.setXRange(oracle_max, 0., padding=0.)
@@ -1792,10 +1802,20 @@ class Overview(QtWidgets.QMainWindow):
         tx, x = episode.trajectory.plot(0)
         _, z = episode.trajectory.plot(2)
         self.trajectory.plot(x, z, pen=pg.mkPen(COLORS[0], width=2), connect='finite')
+        contact_time = next((event.time_s for event in episode.events
+                             if event.reason == 'target_hit' and event.time_s is not None), None)
         if len(episode.trajectory.times):
             points = episode.trajectory.values
             self.trajectory.plot([points[0, 0]], [points[0, 2]], pen=None, symbol='t1', symbolBrush=COLORS[2], symbolSize=12)
-            self.trajectory.plot([points[-1, 0]], [points[-1, 2]], pen=None, symbol='s', symbolBrush=COLORS[1], symbolSize=10)
+            if episode.tracking_time_s is not None:
+                start_index = episode.trajectory.nearest(episode.tracking_time_s, tolerance_s=.2)
+                if start_index is not None:
+                    self.trajectory.plot([points[start_index, 0]], [points[start_index, 2]],
+                                         pen=None, symbol='o', symbolBrush='#ffb454',
+                                         symbolSize=10, name='LOS starts' if bagger else 'Tracking starts')
+            self.trajectory.plot([points[-1, 0]], [points[-1, 2]], pen=None, symbol='s',
+                                 symbolBrush='#ff6565' if contact_time is not None else COLORS[1],
+                                 symbolSize=10, name='Contact' if contact_time is not None else 'End')
         self.selected_position = self.trajectory.plot([], [], pen=None, symbol='o', symbolBrush='#ffffff', symbolPen=COLORS[0], symbolSize=11)
         self._curve(self.altitude, episode.trajectory, 2, episode.trajectory_origin, COLORS[0])
         self._curve(self.altitude, episode.barometer, 0,
@@ -1851,11 +1871,18 @@ class Overview(QtWidgets.QMainWindow):
             episode.velocity.times, np.hypot(episode.velocity.values[:, 0], episode.velocity.values[:, 2])))
         self._curve(self.velocity_plots[3], slant_velocity, 0, 'Ground truth X–Z speed', COLORS[3])
         if episode.tracking_time_s is not None:
-            for plot in (*self.attitude_plots, *self.msp_plots, *self.visual_plots, self.thrust_plot):
+            for plot in (self.altitude, self.margins, *self.attitude_plots, self.thrust_plot,
+                         *self.msp_plots, *self.visual_plots, *self.velocity_plots):
                 plot.addItem(pg.InfiniteLine(episode.tracking_time_s, angle=90,
                                               pen=pg.mkPen('#ffb454', width=2, style=QtCore.Qt.PenStyle.DashLine),
-                                              label='Tracking starts',
+                                              label='LOS starts' if bagger else 'Tracking starts',
                                               labelOpts={'color': '#ffb454', 'position': .9}))
+        if contact_time is not None:
+            for plot in (self.altitude, self.margins, *self.attitude_plots, self.thrust_plot,
+                         *self.msp_plots, *self.visual_plots, *self.velocity_plots):
+                plot.addItem(pg.InfiniteLine(contact_time, angle=90,
+                                              pen=pg.mkPen('#ff6565', width=2), label='Contact',
+                                              labelOpts={'color': '#ff6565', 'position': .9}))
         self.cursors = []
         for plot in (self.altitude, self.margins, *self.attitude_plots, self.thrust_plot, *self.msp_plots, *self.visual_plots, *self.velocity_plots):
             line = pg.InfiniteLine(0, angle=90, movable=True, pen=pg.mkPen('#ffffff', width=1))
