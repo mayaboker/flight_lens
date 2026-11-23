@@ -1,5 +1,6 @@
 """The schema-free MCAP Bagger format uses log time and opaque JPEG/MsgPack bytes."""
 from io import BytesIO
+import json
 from pathlib import Path
 
 import msgpack
@@ -26,7 +27,7 @@ def _envelope(value):
                           'timestamp_source': 'receive'}, use_bin_type=True)
 
 
-def write_bagger(path, *, compress='jpeg', malformed=False, image_only=False):
+def write_bagger(path, *, compress='jpeg', malformed=False, image_only=False, ground_truth=False):
     with Path(path).open('wb') as stream:
         writer = Writer(stream, compression=CompressionType.NONE)
         writer.start()
@@ -34,12 +35,20 @@ def write_bagger(path, *, compress='jpeg', malformed=False, image_only=False):
                                          {'shm': 'true', 'compress': compress})
         altitude = writer.register_channel('telemetry/vfr_hud', '', 0, {'shm': 'false'})
         attitude = writer.register_channel('telemetry/attitude', '', 0, {'shm': 'false'})
+        truth = writer.register_channel('analysis/physics/ground_truth', '', 0, {'shm': 'false'}) if ground_truth else None
         if not image_only:
             writer.add_message(altitude, BASE_NS, _envelope({'alt': 2.5}), BASE_NS + 10**12)
             writer.add_message(attitude, BASE_NS,
                                _envelope({'roll': .1, 'pitch': -.2, 'yaw': .3}), BASE_NS + 10**12)
             if malformed:
                 writer.add_message(attitude, BASE_NS + 50_000_000, b'bad', BASE_NS + 10**12)
+        if truth is not None:
+            for offset, position, velocity in ((0, [1., 2., 3.], [4., 5., 6.]),
+                                                (100_000_000, [2., 3., 4.], [7., 8., 9.])):
+                writer.add_message(truth, BASE_NS + offset, json.dumps(dict(
+                    schema_version=1, drone_id='drone_1', episode_id='episode',
+                    step_index=offset // 1_000_000, simulation_time_s=offset / 1e9,
+                    position_m=position, linear_velocity_m_s=velocity)).encode(), BASE_NS + offset)
         for index, offset in enumerate((100_000_000, 800_000_000, 1_000_000_000)):
             writer.add_message(image, BASE_NS + offset, _jpeg(), BASE_NS + offset, index)
         writer.finish()
@@ -73,6 +82,16 @@ def test_image_only_and_raw_image_feedback(tmp_path):
     assert any('VFR_HUD altitude was not recorded' in notice for notice in data.episodes[0].notices)
     with pytest.raises(ValueError, match='raw images need recorded dimensions'):
         load_flight(write_bagger(tmp_path / 'raw.mcap', compress='raw'))
+
+
+def test_bagger_ground_truth_populates_position_and_velocity(tmp_path):
+    data = load_flight(write_bagger(tmp_path / 'truth.mcap', ground_truth=True))
+    episode = data.episodes[0]
+    assert episode.trajectory_origin == 'Actual ground truth'
+    assert episode.trajectory.times.tolist() == [0., .1]
+    assert episode.trajectory.values.tolist() == [[1., 2., 3.], [2., 3., 4.]]
+    assert episode.velocity.values.tolist() == [[4., 5., 6.], [7., 8., 9.]]
+    assert episode.frames[0].playback_time_s == pytest.approx(.1)
 
 
 def test_tracking_replay_uses_recorded_images(application, tmp_path):

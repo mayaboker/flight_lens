@@ -174,6 +174,7 @@ class Episode:
     configurations: tuple[ConfigurationSnapshot, ...] = ()
     parameter_changes: tuple[ParameterChange, ...] = ()
     time_basis: str = 'simulation'
+    ttc_samples: tuple[TrackingSample, ...] = ()
 
     def context_at(self, time_s):
         index = bisect_left(self.context_times, time_s)

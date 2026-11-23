@@ -851,6 +851,9 @@ class TtcInvestigation(QtWidgets.QWidget):
 
     def set_episode(self, episode):
         self.episode = episode
+        time_axis = 'Recording time' if episode.time_basis == 'recording' else 'Simulation time'
+        for plot in (self.raw_plot, self.estimate_plot):
+            plot.setLabel('bottom', time_axis, units='s')
         self.recalculate()
 
     def set_cursor(self, time_s):
@@ -862,11 +865,12 @@ class TtcInvestigation(QtWidgets.QWidget):
         return TtcParameters(**{name: widget.value() for name, widget in self.fields.items()})
 
     def _tracking_bounds(self):
-        if self.episode is None or not self.episode.tracking_samples:
+        samples = () if self.episode is None else self.episode.ttc_samples or self.episode.tracking_samples
+        if not samples:
             return 0., 1.
         start = self.episode.tracking_time_s
-        start = self.episode.tracking_samples[0].time_s if start is None else start
-        end = self.episode.tracking_samples[-1].time_s
+        start = samples[0].time_s if start is None else start
+        end = samples[-1].time_s
         terminal = [event.time_s for event in self.episode.events
                     if event.time_s is not None and event.time_s >= start
                     and event.phase in ('LOS_COMMIT', 'FAULT')]
@@ -894,7 +898,7 @@ class TtcInvestigation(QtWidgets.QWidget):
             return
         try:
             parameters = self._parameters_from_controls().validate()
-            result = recalculate(self.episode.tracking_samples, parameters)
+            result = recalculate(self.episode.ttc_samples or self.episode.tracking_samples, parameters)
         except ValueError as error:
             self.status.setText('Invalid TTC parameters: ' + str(error))
             return
@@ -912,7 +916,8 @@ class TtcInvestigation(QtWidgets.QWidget):
             filtered_mask = (self.episode.ttc_filtered.times >= tracking_start) & (self.episode.ttc_filtered.times <= tracking_end)
             self.raw_plot.plot(self.episode.ttc_filtered.times[filtered_mask], self.episode.ttc_filtered.values[filtered_mask, 0],
                                pen=pg.mkPen(VISUAL_FILTERED_COLOR, width=2, style=QtCore.Qt.PenStyle.DashLine),
-                               name='Recorded filtered TTC', connect='finite')
+                               name='Recorded optical TTC' if self.episode.time_basis == 'recording'
+                               else 'Recorded filtered TTC', connect='finite')
         points = result.points
         comparison = compare_to_hit_time(self.episode, points)
         self._oracle_max_ttc = max((value for _, value in comparison.oracle), default=1.)
@@ -1711,9 +1716,16 @@ class Overview(QtWidgets.QMainWindow):
                 self.episodes.setItemData(self.episodes.count()-1, f"Physics {episode.key[0]}\nEpisode {episode.key[1]}", QtCore.Qt.ItemDataRole.ToolTipRole)
             self.episodes.setCurrentIndex(data.default_episode)
         self.select_episode(data.default_episode)
-        for tab in (self.msp_tab, self.visual_tab, self.ttc_tab, self.velocity_tab,
-                    self.assistant_tab, self.recording_tab):
+        for tab in (self.msp_tab, self.assistant_tab, self.recording_tab):
             self.tabs.setTabEnabled(self.tabs.indexOf(tab), not bagger)
+        self.tabs.setTabEnabled(self.tabs.indexOf(self.visual_tab),
+                                not bagger or bool(self.episode.camera_error_x.times.size or
+                                                   self.episode.ttc_filtered.times.size))
+        self.tabs.setTabEnabled(self.tabs.indexOf(self.ttc_tab),
+                                not bagger or bool(any(sample.bbox is not None for sample in self.episode.ttc_samples) or
+                                                   self.episode.ttc_filtered.times.size))
+        self.tabs.setTabEnabled(self.tabs.indexOf(self.velocity_tab),
+                                not bagger or bool(self.episode.velocity.times.size))
         if bagger:
             self.tabs.setCurrentWidget(self.tracking_tab)
         self.status.setText((f'Loaded {len(self.episode.frames):,} bagger images · Recording-time playback'
@@ -1792,7 +1804,7 @@ class Overview(QtWidgets.QMainWindow):
         for column, name in enumerate(('Left', 'Top', 'Right', 'Bottom')):
             self._curve(self.margins, episode.margins, column, name, COLORS[column])
         self.margins.addItem(pg.InfiniteLine(0, angle=0, pen=pg.mkPen('#ff8282', style=QtCore.Qt.PenStyle.DashLine)))
-        self.margins.setTitle('BBox unavailable in this recording' if bagger
+        self.margins.setTitle('BBox unavailable in this recording' if bagger and not len(episode.margins.times)
                               else episode.margins_origin + ' edge clearance · zero is boundary contact')
         for column, (plot, name) in enumerate(zip(self.attitude_plots, ('Roll', 'Pitch', 'Yaw'))):
             self._curve(plot, episode.attitude, column,
@@ -1813,12 +1825,14 @@ class Overview(QtWidgets.QMainWindow):
             if len(episode.ttc_raw.times):
                 self._curve(self.visual_plots[0], episode.ttc_raw, 0, 'Raw TTC', VISUAL_RAW_COLOR)
             if len(episode.ttc_filtered.times):
-                self._curve(self.visual_plots[0], episode.ttc_filtered, 0, 'Filtered TTC', VISUAL_FILTERED_COLOR, dashed=True)
+                self._curve(self.visual_plots[0], episode.ttc_filtered, 0,
+                            'Recorded optical TTC' if bagger else 'Filtered TTC', VISUAL_FILTERED_COLOR, dashed=True)
         if len(episode.camera_error_x.times):
             self._curve(self.visual_plots[1], episode.camera_error_x, 0, 'X error from camera center', VISUAL_RAW_COLOR)
         if len(episode.camera_error_y.times):
             self._curve(self.visual_plots[2], episode.camera_error_y, 0, 'Y error from camera center', VISUAL_RAW_COLOR)
-        ttc_label = 'raw and filtered TTC' if len(episode.ttc_raw.times) and len(episode.ttc_filtered.times) \
+        ttc_label = 'recorded optical TTC' if bagger and len(episode.ttc_filtered.times) else \
+            'raw and filtered TTC' if len(episode.ttc_raw.times) and len(episode.ttc_filtered.times) \
             else 'filtered TTC' if len(episode.ttc_filtered.times) else 'TTC unavailable'
         ttc_values = np.concatenate((episode.ttc_raw.values[:, 0], episode.ttc_filtered.values[:, 0])) \
             if len(episode.ttc_raw.times) or len(episode.ttc_filtered.times) else np.array([])

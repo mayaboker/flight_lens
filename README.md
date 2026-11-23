@@ -297,16 +297,24 @@ uses Pillow, included in the wheel dependencies.
 ## MCAP Bagger playback
 
 Open a finalized MCAP Bagger file with `camera/front/image`,
-`telemetry/vfr_hud`, or `telemetry/attitude` channels. Flight Lens decodes the
-App's version-1 MsgPack envelopes to plot VFR_HUD altitude in metres and MAVLink
-roll, pitch and yaw in degrees. The Tracking tab plays recorded JPEG frames with
+`telemetry/vfr_hud`, `telemetry/attitude`, or
+`analysis/physics/ground_truth` channels. Flight Lens decodes the App's
+version-1 MsgPack envelopes to plot VFR_HUD altitude in metres and MAVLink
+roll, pitch and yaw in degrees. Physics ground truth fills the position and
+velocity plots in metres and metres per second; the Velocity tab is available
+when those samples exist. The Visual tab decodes `visual/bbox` to plot camera-center
+error and image-edge margins. Qualified `features/navigation_result` estimates
+populate the recorded optical TTC curve. The TTC tab can also recalculate TTC
+from the recorded bbox sequence using its session-only controls. The Tracking tab
+plays recorded JPEG frames with
 the most recent preceding altitude and attitude sample when it is at most 0.5 s
 old. Images remain on disk until selected, and MP4 export uses the same frame
 timeline.
 
-All three streams use MCAP `log_time`, shown as seconds since the first relevant
+These streams use MCAP `log_time`, shown as seconds since the first relevant
 message. Source `publish_time` is retained in the recording but does not align
-the playback. Bagger files have no physics trajectory, mission events, or TTC
-analysis; those views stay unavailable. Invalid telemetry is skipped with a
+the playback. The MSP tab stays unavailable because the sample Bagger recording
+does not include MSP diagnostics. The TTC hit-time oracle and mission events are
+unavailable without their source records. Invalid telemetry is skipped with a
 notice. Finalize the recording before opening it; a `.mcap.partial` file is not
 a playable recording.
