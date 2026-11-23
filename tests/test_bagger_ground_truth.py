@@ -99,3 +99,30 @@ def test_first_contact_marks_hit_and_ends_plotted_samples(tmp_path):
     assert episode.trajectory.times.tolist() == [0., .1, .2]
     assert episode.velocity.times.tolist() == [0., .1, .2]
     assert episode.barometer.times.tolist() == [0., .1, .2]
+
+
+def test_msp_rc_uses_send_time_and_stops_at_contact(tmp_path):
+    path = tmp_path / 'rc.mcap'
+    base = 1_700_000_000_000_000_000
+    with path.open('wb') as stream:
+        writer = Writer(stream, compression=CompressionType.NONE)
+        writer.start()
+        altitude = writer.register_channel('telemetry/vfr_hud', '', 0, {'shm': 'false'})
+        rc = writer.register_channel('control/msp_rc', '', 0, {'shm': 'false'})
+        contact = writer.register_channel('simulation/target_contact', '', 0, {'shm': 'false'})
+        writer.add_message(altitude, base, msgpack.packb({'schema_version': 1, 'value': {'alt': 20}}), base)
+        for sequence, sent_ms, pitch in ((1, 50, 1500), (2, 100, 1578), (3, 300, 1600)):
+            payload = msgpack.packb({'schema_version': 1, 'timestamp_source': 'send', 'value': {
+                'sequence': sequence, 'phase': 'los', 'sent_monotonic_ns': sequence,
+                'channels': [1500, pitch, 1540, 1500, 2000, 2000, 1000, 1000]}}, use_bin_type=True)
+            writer.add_message(rc, base + (sent_ms + 20) * 1_000_000, payload,
+                               base + sent_ms * 1_000_000)
+        writer.add_message(contact, base + 200_000_000,
+                           msgpack.packb({'schema_version': 1, 'value': True}),
+                           base + 200_000_000)
+        writer.finish()
+
+    episode = load_bagger_flight(path, lambda _: None, lambda: False).episodes[0]
+    assert episode.rc_channels.times.tolist() == [.05, .1]
+    assert episode.rc_channels.values[:, 1].tolist() == [1500., 1578.]
+    assert episode.rc_channels.values[:, 2].tolist() == [1540., 1540.]

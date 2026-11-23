@@ -1251,7 +1251,7 @@ class Overview(QtWidgets.QMainWindow):
         self.msp_status.setStyleSheet('color:#9bb0c8; padding:3px')
         msp_layout.addWidget(self.msp_status)
         self.msp_plots = []
-        for axis in ('Roll', 'Pitch', 'Yaw'):
+        for axis in ('Roll', 'Pitch', 'Yaw', 'Throttle'):
             plot = pg.PlotWidget(title=f'MSP {axis} attitude')
             plot.setLabel('left', 'Angle', units='deg')
             plot.getAxis('left').setWidth(76)
@@ -1726,8 +1726,10 @@ class Overview(QtWidgets.QMainWindow):
                 self.episodes.setItemData(self.episodes.count()-1, f"Physics {episode.key[0]}\nEpisode {episode.key[1]}", QtCore.Qt.ItemDataRole.ToolTipRole)
             self.episodes.setCurrentIndex(data.default_episode)
         self.select_episode(data.default_episode)
-        for tab in (self.msp_tab, self.assistant_tab, self.recording_tab):
+        for tab in (self.assistant_tab, self.recording_tab):
             self.tabs.setTabEnabled(self.tabs.indexOf(tab), not bagger)
+        self.tabs.setTabEnabled(self.tabs.indexOf(self.msp_tab),
+                                not bagger or bool(self.episode.rc_channels.times.size))
         self.tabs.setTabEnabled(self.tabs.indexOf(self.visual_tab),
                                 not bagger or bool(self.episode.camera_error_x.times.size or
                                                    self.episode.ttc_filtered.times.size))
@@ -1830,17 +1832,28 @@ class Overview(QtWidgets.QMainWindow):
             self._curve(plot, episode.attitude, column,
                         ('MAVLink ' if bagger else 'Measured ') + name, ATTITUDE_MEASURED_COLOR)
             self._curve(plot, episode.feedback_attitude, column, 'Estimated ' + name, ATTITUDE_ESTIMATED_COLOR, dashed=True)
-        has_msp = bool(len(episode.msp_attitude.times))
-        self.msp_status.setText('Betaflight MSP attitude · measured at the firmware response timestamps'
-                                if has_msp else 'Betaflight MSP attitude unavailable in this recording')
-        for column, (plot, name) in enumerate(zip(self.msp_plots, ('Roll', 'Pitch', 'Yaw'))):
-            if has_msp:
-                self._curve(plot, episode.msp_attitude, column, 'MSP measured ' + name, MSP_MEASURED_COLOR)
-                self._curve(plot, episode.msp_attitude_estimate, column, 'Kalman estimate ' + name,
-                            MSP_ESTIMATED_COLOR, dashed=True)
-            self._curve(plot, episode.attitude, column, 'Physical reference ' + name, ATTITUDE_MEASURED_COLOR)
-            self._curve(plot, episode.feedback_attitude, column, 'Controller feedback ' + name,
-                        ATTITUDE_ESTIMATED_COLOR, dashed=True)
+        self.msp_plots[3].setVisible(bagger)
+        if bagger:
+            self.msp_status.setText('MSP RC commands sent to Betaflight · PWM; compare measured pitch in Attitude & Thrust')
+            for column, (plot, name) in enumerate(zip(self.msp_plots, ('Roll', 'Pitch', 'Yaw', 'Throttle'))):
+                plot.setTitle('Sent RC ' + name)
+                plot.setLabel('left', 'PWM', units='µs')
+                source_column = (0, 1, 3, 2)[column]
+                self._curve(plot, episode.rc_channels, source_column, 'Sent ' + name, MSP_MEASURED_COLOR)
+        else:
+            has_msp = bool(len(episode.msp_attitude.times))
+            self.msp_status.setText('Betaflight MSP attitude · measured at the firmware response timestamps'
+                                    if has_msp else 'Betaflight MSP attitude unavailable in this recording')
+            for column, (plot, name) in enumerate(zip(self.msp_plots, ('Roll', 'Pitch', 'Yaw'))):
+                plot.setTitle(f'MSP {name} attitude')
+                plot.setLabel('left', 'Angle', units='deg')
+                if has_msp:
+                    self._curve(plot, episode.msp_attitude, column, 'MSP measured ' + name, MSP_MEASURED_COLOR)
+                    self._curve(plot, episode.msp_attitude_estimate, column, 'Kalman estimate ' + name,
+                                MSP_ESTIMATED_COLOR, dashed=True)
+                self._curve(plot, episode.attitude, column, 'Physical reference ' + name, ATTITUDE_MEASURED_COLOR)
+                self._curve(plot, episode.feedback_attitude, column, 'Controller feedback ' + name,
+                            ATTITUDE_ESTIMATED_COLOR, dashed=True)
         if len(episode.ttc_raw.times) or len(episode.ttc_filtered.times):
             if len(episode.ttc_raw.times):
                 self._curve(self.visual_plots[0], episode.ttc_raw, 0, 'Raw TTC', VISUAL_RAW_COLOR)

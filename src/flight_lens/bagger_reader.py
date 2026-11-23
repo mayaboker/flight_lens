@@ -16,7 +16,8 @@ GROUND_TRUTH = 'analysis/physics/ground_truth'
 BBOX = 'visual/bbox'
 NAVIGATION_RESULT = 'features/navigation_result'
 CONTACT = 'simulation/target_contact'
-TOPICS = (IMAGE, ALTITUDE, ATTITUDE, GROUND_TRUTH, BBOX, NAVIGATION_RESULT, CONTACT)
+MSP_RC = 'control/msp_rc'
+TOPICS = (IMAGE, ALTITUDE, ATTITUDE, GROUND_TRUTH, BBOX, NAVIGATION_RESULT, CONTACT, MSP_RC)
 MAX_ENVELOPE_BYTES = 1024 * 1024
 MAX_SAMPLE_AGE_S = .5
 
@@ -26,7 +27,7 @@ def is_bagger_summary(summary):
     if summary is None:
         return False
     return any(channel.topic == IMAGE and channel.metadata.get('shm') == 'true'
-               or channel.topic in (ALTITUDE, ATTITUDE, GROUND_TRUTH, BBOX, NAVIGATION_RESULT, CONTACT)
+               or channel.topic in (ALTITUDE, ATTITUDE, GROUND_TRUTH, BBOX, NAVIGATION_RESULT, CONTACT, MSP_RC)
                and channel.schema_id == 0
                and channel.message_encoding == ''
                for channel in summary.channels.values())
@@ -50,6 +51,18 @@ def _finite_number(value):
     if type(value) not in (int, float) or not isfinite(value):
         raise ValueError('Expected a finite telemetry number')
     return float(value)
+
+
+def _msp_rc(value):
+    """Decode the exact eight PWM channels sent in one MSP_SET_RAW_RC frame."""
+    channels = value.get('channels')
+    if (type(value.get('sequence')) is not int or value['sequence'] < 1
+            or type(value.get('sent_monotonic_ns')) is not int or value['sent_monotonic_ns'] < 0
+            or not isinstance(value.get('phase'), str) or not value['phase']
+            or not isinstance(channels, list) or len(channels) != 8
+            or any(type(channel) is not int or not 1000 <= channel <= 2000 for channel in channels)):
+        raise ValueError('Invalid MSP RC command')
+    return tuple(channels)
 
 
 def _ground_truth(payload):
@@ -154,8 +167,8 @@ def load_bagger_flight(path, progress, cancel):
         raise ValueError('Finish the MCAP Bagger recording before opening it.')
     stat = path.stat()
     images, altitude_rows, attitude_rows, truth_rows = [], [], [], []
-    bbox_rows, bbox_by_sequence, ttc_rows, navigation_stamps, contact_stamps = [], {}, [], [], []
-    invalid = {ALTITUDE: 0, ATTITUDE: 0, GROUND_TRUTH: 0, BBOX: 0, NAVIGATION_RESULT: 0, CONTACT: 0}
+    bbox_rows, bbox_by_sequence, ttc_rows, navigation_stamps, contact_stamps, rc_rows = [], {}, [], [], [], []
+    invalid = {ALTITUDE: 0, ATTITUDE: 0, GROUND_TRUTH: 0, BBOX: 0, NAVIGATION_RESULT: 0, CONTACT: 0, MSP_RC: 0}
     with path.open('rb') as stream:
         reader = make_reader(stream, validate_crcs=True)
         summary = reader.get_summary()
@@ -182,7 +195,9 @@ def load_bagger_flight(path, progress, cancel):
                     truth_rows.append((message.log_time, _ground_truth(message.data)))
                     continue
                 value = _envelope(message.data)
-                if channel.topic == ALTITUDE:
+                if channel.topic == MSP_RC:
+                    rc_rows.append((message.publish_time, _msp_rc(value)))
+                elif channel.topic == ALTITUDE:
                     altitude_rows.append((message.log_time, (_finite_number(value['alt']),)))
                 elif channel.topic == ATTITUDE:
                     attitude_rows.append((message.log_time, tuple(degrees(_finite_number(value[key]))
@@ -206,6 +221,7 @@ def load_bagger_flight(path, progress, cancel):
     stamps.extend(stamp for stamp, _ in ttc_rows)
     stamps.extend(navigation_stamps)
     stamps.extend(contact_stamps)
+    stamps.extend(stamp for stamp, _ in rc_rows)
     if not stamps:
         raise ValueError('No recorded images, telemetry, physics truth, visual boxes, or optical TTC samples found.')
     origin = min(stamps)
@@ -219,6 +235,7 @@ def load_bagger_flight(path, progress, cancel):
     truth_rows = list(through_contact(truth_rows))
     bbox_rows = list(through_contact(bbox_rows))
     ttc_rows = list(through_contact(ttc_rows))
+    rc_rows = list(through_contact(rc_rows))
     altitude = series((elapsed(stamp), value) for stamp, value in altitude_rows)
     attitude = series(((elapsed(stamp), value) for stamp, value in attitude_rows), 3)
     trajectory = series(((elapsed(stamp), vectors[0]) for stamp, vectors in truth_rows), 3)
@@ -233,6 +250,7 @@ def load_bagger_flight(path, progress, cancel):
                                         box[5] - box[1] - box[3]))
                       for stamp, box in bbox_rows if box is not None), 4)
     ttc_filtered = series((elapsed(stamp), value) for stamp, value in ttc_rows)
+    rc_channels = series(((elapsed(stamp), channels) for stamp, channels in rc_rows), 8)
     ttc_samples = tuple(_ttc_sample(elapsed(stamp), None if box is None else box[:4])
                         for stamp, box in bbox_rows)
     frames = tuple(FrameRef(IMAGE, stamp, sequence, (stamp, sequence), 0, 0,
@@ -271,6 +289,8 @@ def load_bagger_flight(path, progress, cancel):
         notices.append('Visual bounding boxes were not recorded.')
     if not ttc_filtered.times.size:
         notices.append('Qualified optical TTC was not recorded.')
+    if not rc_channels.times.size:
+        notices.append('MSP RC commands were not recorded.')
     events = []
     if los_stamp is not None:
         events.append(Event(elapsed(los_stamp), elapsed(los_stamp), los_stamp,
@@ -300,7 +320,7 @@ def load_bagger_flight(path, progress, cancel):
                         (float(min(trajectory.values[:, 1])), float(max(trajectory.values[:, 1])))
                         if trajectory.times.size else None, None, 0, 0, 'Finalized MCAP'),
         notices=tuple(notices), context_times=(), contexts=(), frames=frames,
-        boxes={}, time_basis='recording', ttc_samples=ttc_samples)
-    progress(f'Loaded {len(altitude_rows) + len(attitude_rows) + len(truth_rows) + len(bbox_rows) + len(ttc_rows):,} telemetry samples; {len(frames):,} images remain on disk.')
+        boxes={}, time_basis='recording', ttc_samples=ttc_samples, rc_channels=rc_channels)
+    progress(f'Loaded {len(altitude_rows) + len(attitude_rows) + len(truth_rows) + len(bbox_rows) + len(ttc_rows) + len(rc_rows):,} telemetry samples; {len(frames):,} images remain on disk.')
     return FlightData(path, stat.st_size, stat.st_mtime_ns, (episode,), 0, (), len(frames),
                       recording_format='bagger')

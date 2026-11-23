@@ -4,11 +4,14 @@ from threading import Event
 import numpy as np
 import pytest
 from PySide6 import QtWidgets
+from mcap.writer import Writer, CompressionType
+import msgpack
 
 from flight_lens.app import (ErdDialog, ExportDialog, Overview, TrackingReplay, load_config,
                               sql_chart, tracking_csv_rows)
 from flight_lens.model import TrackingSample
 from flight_lens.reader import load_flight, Cancelled
+from flight_lens.bagger_reader import load_bagger_flight
 
 
 @pytest.fixture(scope='session')
@@ -181,8 +184,9 @@ def test_overview_async_loading_cursor_event_and_frame(window,application,flight
         measured = next(curve for curve in plot.listDataItems() if curve.name().startswith('Measured '))
         estimated = next(curve for curve in plot.listDataItems() if curve.name().startswith('Estimated '))
         assert measured.opts['pen'].color().name() != estimated.opts['pen'].color().name()
-    assert len(window.msp_plots)==3
-    assert all(len(plot.plotItem.legend.items)==4 for plot in window.msp_plots)
+    assert len(window.msp_plots)==4
+    assert all(len(plot.plotItem.legend.items)==4 for plot in window.msp_plots[:3])
+    assert not window.msp_plots[3].isVisible()
     assert 'measured at the firmware response timestamps' in window.msp_status.text()
     assert len(window.thrust_plot.plotItem.legend.items)==1
     assert len(window.velocity_plots)==4
@@ -350,3 +354,25 @@ def test_tracking_issue_panel_explains_cause_without_raw_dump(application,flight
     tab.close()
     tab.deleteLater()
     application.processEvents()
+
+
+def test_bagger_msp_tab_plots_sent_rc_pwm(window, application, tmp_path):
+    path = tmp_path / 'sent-rc.mcap'
+    base = 1_700_000_000_000_000_000
+    with path.open('wb') as stream:
+        writer = Writer(stream, compression=CompressionType.NONE)
+        writer.start()
+        rc = writer.register_channel('control/msp_rc', '', 0, {'shm': 'false'})
+        payload = msgpack.packb({'schema_version': 1, 'timestamp_source': 'send', 'value': {
+            'sequence': 1, 'phase': 'los', 'sent_monotonic_ns': 100,
+            'channels': [1501, 1578, 1540, 1499, 2000, 2000, 1000, 1000]}}, use_bin_type=True)
+        writer.add_message(rc, base + 20_000_000, payload, base)
+        writer.finish()
+
+    window.apply_data(load_bagger_flight(path, lambda _: None, lambda: False))
+    window.tabs.setCurrentWidget(window.msp_tab)
+    application.processEvents()
+    assert window.tabs.isTabEnabled(window.tabs.indexOf(window.msp_tab))
+    assert window.msp_plots[3].isVisible()
+    assert [plot.listDataItems()[0].yData[0] for plot in window.msp_plots] == [1501, 1578, 1499, 1540]
+    assert window.msp_plots[1].getAxis('left').labelText == 'PWM'

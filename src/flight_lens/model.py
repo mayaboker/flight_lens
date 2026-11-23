@@ -1,6 +1,6 @@
 """Immutable flight data; no Qt, filesystem or controller dependencies."""
 from bisect import bisect_left
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping
 
@@ -175,6 +175,7 @@ class Episode:
     parameter_changes: tuple[ParameterChange, ...] = ()
     time_basis: str = 'simulation'
     ttc_samples: tuple[TrackingSample, ...] = ()
+    rc_channels: Series = field(default_factory=lambda: series([], 8))
 
     def context_at(self, time_s):
         index = bisect_left(self.context_times, time_s)
